@@ -3,4 +3,5 @@ yarn-error.log
 *.log
 *.env
 *env.local
+*.zip
 prisma/migrations
