@@ -94,13 +94,6 @@ app.use(function (err, req, res, next) {
   res.json({ status: false, message: res.locals.message })
 });
 
-
-
-
-server.listen(port, () => {
-  console.log("listening on port:", port);
-})
-
-
+app.listen(port, () => console.log("Server ready on port 3000."));
 
 export default app;
