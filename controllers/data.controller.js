@@ -234,44 +234,188 @@ export const getMusicVideosBySearch = expressAsyncHandler(async (req, res, next)
 
 export const getArtistes = expressAsyncHandler(async (req, res, next) => {
 
-    const { page, pageSize, query } = req.query
-    // const where = generateWhere(query)
+    const { page, pageSize, query } = req.query;
     let where = {
         name_: {
             not: '0'
         }
     };
 
-    if (query) {
-        where.name_ = {
-            contains: query
-        };
-    }
-    console.log('where', where)
-    const artistesUnsorted = await client.artistes.findMany({
-        where: where,
-    });
-    const artistesSorted = artistesUnsorted
-        .map(artiste => ({ ...artiste, views: parseInt(artiste.views) }))
-        .sort((a, b) => b.views - a.views);
-    const paginatedArtistes = artistesSorted.slice((page - 1), pageSize, page, pageSize);
+    if (query?.length > 50) {
 
+        const jsonObj = JSON.parse(query);
+        const genre = jsonObj.genre;
+        const sortMode = jsonObj.sortMode;
+        const filter = jsonObj.filter;
+        let gender = filter.gender[0] || '';
+        let age = filter.age[0] || '';
+        let groupType = filter.groupType[0] || '';
+        let labels = filter.labels[0] || '';
+        const offset = (page - 1) * pageSize;
+        let artistesUnsorted = null;
+        let sql = '';
+        if (genre == 'All') {
+            artistesUnsorted = await client.$queryRaw`
+            SELECT artistes.*, COUNT(gallery.id_) AS gallery_count
+            FROM artistes
+            LEFT JOIN gallery ON artistes.id_ = gallery.artist_id
+            GROUP BY artistes.id_
+        `;
+        } else {
+            artistesUnsorted = await client.$queryRaw`
+            SELECT artistes.*, COUNT(gallery.id_) AS gallery_count
+            FROM artistes
+            LEFT JOIN gallery ON artistes.id_ = gallery.artist_id
+            WHERE FIND_IN_SET(${genre}, artistes.genre) > 0
+            GROUP BY artistes.id_
+                `;
+        }
 
-    const artistsWithAlbumCount = await Promise.all(paginatedArtistes.map(async artist => {
-        const albumsCount = await client.albums.count({
-            where: {
-                artist_id: artist.id_
-            }
+        let artistesSorted = null;
+
+        switch (sortMode) {
+            case 'Views':
+                artistesSorted = artistesUnsorted
+                    .map(artiste => ({ ...artiste, views: parseInt(artiste.views) }))
+                    .sort((a, b) => b.views - a.views);
+                break;
+
+            case 'RIP':
+                artistesSorted = [];
+                break;
+
+            case 'Most Item First':
+                artistesSorted = [];
+                break;
+
+            case 'A-Z':
+                artistesSorted = artistesUnsorted.sort((a, b) => a.name_.localeCompare(b.name_));
+                break;
+
+            case 'Z-A':
+                artistesSorted = artistesUnsorted.sort((a, b) => b.name_.localeCompare(a.name_));
+                break;
+
+            case 'Youngest to Oldest':
+                artistesSorted = artistesUnsorted.sort((a, b) => new Date(b.dob) - new Date(a.dob));
+                break;
+
+            case 'Oldest to Youngest':
+                artistesSorted = artistesUnsorted.sort((a, b) => new Date(a.dob) - new Date(b.dob));
+                break;
+
+            case 'Recently Updated':
+                artistesSorted = [];
+                break;
+
+            case 'Birthday':
+
+                const today = new Date();
+                const todayMonth = today.getMonth() + 1; // JavaScript months are 0-based
+                const todayDay = today.getDate();
+
+                artistesSorted = artistesUnsorted.filter(artiste => {
+                    const dob = new Date(artiste.dob);
+                    const dobMonth = dob.getMonth() + 1; // JavaScript months are 0-based
+                    const dobDay = dob.getDate();
+                    return dobMonth === todayMonth && dobDay === todayDay;
+                });
+
+                break;
+
+            case 'Monthly Listners':
+                artistesSorted = artistesUnsorted.sort((a, b) => b.monthly_listeners - a.monthly_listeners);
+                break;
+
+            case 'Social Followers':
+                artistesSorted = artistesUnsorted.sort((a, b) => {
+                    const followersA = a.facebook_count + a.instagram_count + a.soundcloud_count + a.twitter_count + a.youtube_count + a.spotify_count;
+                    const followersB = b.facebook_count + b.instagram_count + b.soundcloud_count + b.twitter_count + b.youtube_count + b.spotify_count;
+                    return followersB - followersA; // Descending order
+                });
+                break;
+
+            case 'Most Photos':
+                artistesSorted = artistesUnsorted.sort((a, b) => {
+                    const stringValue_a = a.gallery_count.toString();
+                    const stringValue_b = b.gallery_count.toString();
+                    let numericValue_a = Number(stringValue_a.slice(0, -1));
+                    let numericValue_b = Number(stringValue_b.slice(0, -1));
+                    return numericValue_b - numericValue_a
+                });
+                break;
+
+            case 'Following':
+                artistesSorted = [];
+                break;
+        }
+
+        if (gender != '') {
+            artistesSorted = artistesSorted.filter(artist => artist.gender === gender);
+        }
+
+        if (age != '') {
+            artistesSorted = artistesSorted.filter(artist => {
+                const birthdate = new Date(artist.dob);
+                const today = new Date();
+                let age = today.getFullYear() - birthdate.getFullYear();
+                console.log(age);
+                const m = today.getMonth() - birthdate.getMonth();
+                if (m < 0 || (m === 0 && today.getDate() < birthdate.getDate())) {
+                    age--;
+                }
+
+                switch (ageBracket) {
+                    case '<20':
+                        return age < 20;
+                    case '20-30':
+                        return age >= 20 && age <= 30;
+                    case '30-40':
+                        return age > 30 && age <= 40;
+                    case '40<':
+                        return age > 40;
+                    default:
+                        return true; // Includes the artist if no specific bracket matches
+                }
+            });
+        }
+
+        const paginatedArtistes = artistesSorted.slice((page - 1) * pageSize, page * pageSize);
+        const serializedArtistes = paginatedArtistes.map(artist => ({
+            ...artist,
+            gallery_count: artist.gallery_count.toString(), // Convert BigInt to String
+        }));
+
+        res.status(200).json({
+            status: true,
+            artists: serializedArtistes
+        })
+
+    } else {
+        if (query) {
+            where.name_ = {
+                contains: query
+            };
+        } else {
+            where = {
+                name_: {
+                    not: '0'
+                }
+            };
+        }
+        const artistesUnsorted = await client.artistes.findMany({
+            where: where,
         });
-        return { ...artist, albumsCount };
-    }));
-
-    res.status(200).json({
-        status: true,
-        artists: artistsWithAlbumCount.filter((artist, index, arr) => arr.indexOf(artist) === index)
-    })
+        const artistesSorted = artistesUnsorted
+            .map(artiste => ({ ...artiste, views: parseInt(artiste.views) }))
+            .sort((a, b) => b.views - a.views);
+        const paginatedArtistes = artistesSorted.slice((page - 1) * pageSize, page * pageSize);
+        res.status(200).json({
+            status: true,
+            artists: paginatedArtistes.filter((artist, index, arr) => arr.indexOf(artist) === index)
+        })
+    }
 })
-
 
 export const getArtistesByGenre = expressAsyncHandler(async (req, res, next) => {
 
